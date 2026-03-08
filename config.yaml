@@ -1,0 +1,33 @@
+repo_path: "/home/qrider/projects/vestry-inblack"
+
+indexer:
+  languages: [typescript, python, javascript, go]
+  exclude: [node_modules, .git, dist, __pycache__, "*.min.js", .next, build]
+  embedding_model: "nomic-embed-text"   # via local Ollama — must be pulled
+  embedding_base_url: "http://localhost:11434"  # Ollama local endpoint
+  watch: true
+
+compiler:
+  max_pack_tokens: 6000
+  symbol_max_body_lines: 60
+  max_call_sites: 5
+  semantic_threshold: 0.72
+
+repl_pool:
+  size: 4
+  timeout_ms: 2000
+
+downstream:
+  base_url: "https://api.moonshot.cn/v1"   # Moonshot OpenAI-compatible endpoint
+  api_key: "your-moonshot-api-key"          # from platform.moonshot.ai
+  model: "kimi-k2.5"
+  timeout_ms: 120000
+
+cache:
+  enabled: true
+  max_size: 256
+  ttl_seconds: 300
+
+server:
+  host: "127.0.0.1"
+  port: 9787
