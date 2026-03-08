@@ -63,6 +63,7 @@ pip install -r requirements.txt
 | `watchfiles` | Incremental re-indexing on file changes |
 | `cachetools` | TTL cache for compiled context packs |
 | `pyyaml` | Configuration loading |
+| `rich` | Terminal UI — startup banner, progress bars, request logging |
 
 ## Configuration
 
@@ -76,6 +77,7 @@ indexer:
   exclude: [node_modules, .git, dist, __pycache__, "*.min.js", .next, build]
   embedding_model: "nomic-embed-text"
   embedding_base_url: "http://localhost:11434"
+  embeddings_db_path: null                    # default: ~/.rlm-gateway/embeddings.db
   watch: true                                 # auto-reindex on file changes
 
 compiler:
@@ -120,14 +122,34 @@ Change `downstream.model` in config.yaml and restart to switch.
 python3 main.py
 ```
 
-Expected output:
+The gateway starts with a rich terminal UI showing a startup banner, a live progress bar during indexing, and a summary panel when ready:
+
 ```
-[rlm] Loading config from config.yaml
-[rlm] Building repo index for /home/you/projects/your-repo...
-[rlm] Indexed 1,847 files, 24,310 symbols, 18,440 chunks (38.2s)
-[rlm] File watcher active
-[rlm] Gateway ready → http://127.0.0.1:9787
-[rlm] Downstream: Moonshot API → kimi-k2.5
+  RLM Gateway
+  Downstream:  kimi-k2.5 via https://api.moonshot.cn/v1
+  Port:        9787
+  Indexing:    /home/you/projects/your-repo
+
+  ⠋ Embedding chunks ━━━━━━━━━━━━━━━━━━  120/247 files 0:00:32
+
+  ╭──────── RLM Gateway Ready ────────╮
+  │  Files indexed:     1,847         │
+  │  Symbols found:     24,310        │
+  │  Chunks embedded:   18,440        │
+  │  Time taken:        38.2s         │
+  │                                   │
+  │  Listening on:      http://…:9787 │
+  │  Downstream:        Moonshot …    │
+  ╰───────────────────────────────────╯
+  File watcher active
+```
+
+Subsequent starts load cached embeddings from disk (`~/.rlm-gateway/embeddings.db`) and skip the embedding step, reducing startup to a few seconds.
+
+Per-request logs are printed inline:
+
+```
+  14:32:05  POST /v1/chat/completions  refactor  4,812 tokens  200 OK
 ```
 
 ### Configure CCR
@@ -206,18 +228,18 @@ Triggers a full index rebuild. Useful after large changes (branch switches, reba
 
 ```
 rlm-gateway/
-├── main.py                          # Entry point — load config, build index, start server
+├── main.py                          # Entry point — rich UI, progress bar, start server
 ├── config.yaml                      # All configuration
 ├── requirements.txt                 # Python dependencies
 ├── gateway/
-│   ├── server.py                    # FastAPI app with all endpoints
+│   ├── server.py                    # FastAPI app with all endpoints + per-request logging
 │   ├── extractor.py                 # Parse TaskSignals from messages (no LLM call)
 │   └── forwarder.py                 # Async streaming proxy to Moonshot API
 ├── indexer/
-│   ├── indexer.py                   # Orchestrates index build + file watcher
+│   ├── indexer.py                   # Orchestrates index build, file watcher, incremental reindex
 │   ├── ast_map.py                   # Tree-sitter symbol/import/call-site index
 │   ├── dep_graph.py                 # NetworkX module dependency graph
-│   ├── embeddings.py                # Chunk embeddings → sqlite-vec (via Ollama)
+│   ├── embeddings.py                # Persistent chunk embeddings → sqlite-vec (via Ollama)
 │   └── git_meta.py                  # Per-file recent git commits
 ├── compiler/
 │   ├── compiler.py                  # Orchestrates strategies → ContextPack
@@ -261,6 +283,18 @@ The compiled context is serialized as XML and prepended to the system message:
     </file>
   </git_context>
 </context_pack>
+```
+
+## Embedding Cache
+
+Embeddings are stored persistently on disk at `~/.rlm-gateway/embeddings.db` (configurable via `indexer.embeddings_db_path`). On startup, if the database already has data, the embedding step is skipped entirely — reducing startup from tens of seconds to a few seconds.
+
+When the file watcher detects changes, only the affected file's chunks are re-embedded (incremental reindex). The `/admin/index/rebuild` endpoint forces a full rebuild including embeddings.
+
+To clear the cache and force a fresh build, delete the database file:
+
+```bash
+rm ~/.rlm-gateway/embeddings.db
 ```
 
 ## Error Handling
