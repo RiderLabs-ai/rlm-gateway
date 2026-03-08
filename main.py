@@ -1,6 +1,7 @@
 """RLM Gateway — entry point."""
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -33,11 +34,12 @@ def main():
     from compiler.compiler import Compiler
     from repl.pool import REPLPool
 
-    # Setup forwarder
+    # Setup forwarder — env vars override config for secrets
     ds = config["downstream"]
+    api_key = os.environ.get("MOONSHOT_API_KEY") or ds.get("api_key", "")
     forwarder = Forwarder(
         base_url=ds["base_url"],
-        api_key=ds["api_key"],
+        api_key=api_key,
         model=ds["model"],
         timeout_ms=ds.get("timeout_ms", 120000),
     )
