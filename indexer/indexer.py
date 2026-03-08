@@ -27,10 +27,14 @@ class RepoIndex:
         self.languages = idx_cfg.get("languages", ["typescript", "python", "javascript", "go"])
         self.exclude_patterns = idx_cfg.get("exclude", [])
         self.embedding_model = idx_cfg.get("embedding_model", "nomic-embed-text")
+        self.embeddings_db_path = idx_cfg.get("embeddings_db_path", None)
 
         self.ast_map = ASTMap(self.languages)
         self.dep_graph = DepGraph()
-        self.embeddings = EmbeddingStore(model=self.embedding_model)
+        self.embeddings = EmbeddingStore(
+            model=self.embedding_model,
+            db_path=self.embeddings_db_path,
+        )
         self.git_meta = GitMeta(self.repo_path)
 
         self.ready = False
@@ -88,9 +92,9 @@ class RepoIndex:
         # Git metadata
         self.git_meta.init()
 
-        # Embeddings
+        # Embeddings — load from cache or build
         try:
-            self.embeddings.build(self.ast_map, self._file_contents)
+            self.embeddings.load_or_build(self.ast_map, self._file_contents)
             self.chunk_count = self.embeddings.chunk_count
         except Exception as e:
             logger.error(f"Embedding build failed (continuing without): {e}")
@@ -100,8 +104,53 @@ class RepoIndex:
         self.ready = True
 
     def rebuild(self):
-        """Trigger a full rebuild (can be called from admin endpoint)."""
-        thread = threading.Thread(target=self.build, daemon=True)
+        """Trigger a full rebuild including embeddings (called from admin endpoint)."""
+        def _rebuild():
+            self.ready = False
+            repo = Path(self.repo_path)
+            if not repo.is_dir():
+                return
+
+            self._all_files = []
+            self._file_contents = {}
+
+            for file_path in repo.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                if file_path.suffix not in _INDEXABLE_EXTS:
+                    continue
+                if self._is_excluded(file_path, repo):
+                    continue
+
+                str_path = str(file_path)
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+
+                self._all_files.append(str_path)
+                self._file_contents[str_path] = content
+
+            self.file_count = len(self._all_files)
+
+            for fp in self._all_files:
+                self.ast_map.index_file(fp, self._file_contents[fp])
+            self.symbol_count = self.ast_map.symbol_count
+
+            self.dep_graph.build(self.ast_map, self.repo_path, self._all_files)
+            self.git_meta.init()
+
+            try:
+                self.embeddings.rebuild(self.ast_map, self._file_contents)
+                self.chunk_count = self.embeddings.chunk_count
+            except Exception as e:
+                logger.error(f"Embedding rebuild failed: {e}")
+
+            self.last_indexed = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.ready = True
+            logger.info("Full rebuild complete")
+
+        thread = threading.Thread(target=_rebuild, daemon=True)
         thread.start()
 
     def _is_excluded(self, file_path: Path, repo: Path) -> bool:
@@ -113,17 +162,15 @@ class RepoIndex:
 
         parts = rel.split("/")
         for pattern in self.exclude_patterns:
-            # Check directory names
             for part in parts:
                 if fnmatch.fnmatch(part, pattern):
                     return True
-            # Check full relative path
             if fnmatch.fnmatch(rel, pattern):
                 return True
         return False
 
     def _reindex_file(self, file_path: str):
-        """Incrementally reindex a single file."""
+        """Incrementally reindex a single file (AST + embeddings)."""
         fp = Path(file_path)
         if not fp.is_file() or fp.suffix not in _INDEXABLE_EXTS:
             return
@@ -143,6 +190,14 @@ class RepoIndex:
 
         self.ast_map.index_file(str_path, content)
         self.symbol_count = self.ast_map.symbol_count
+
+        # Incrementally re-embed only this file's chunks
+        try:
+            self.embeddings.reindex_file(str_path, self.ast_map)
+            self.chunk_count = self.embeddings.chunk_count
+        except Exception as e:
+            logger.error(f"Incremental embedding update failed for {str_path}: {e}")
+
         logger.debug(f"Reindexed: {str_path}")
 
     def _handle_delete(self, file_path: str):
@@ -153,6 +208,13 @@ class RepoIndex:
         if str_path in self._all_files:
             self._all_files.remove(str_path)
             self.file_count = len(self._all_files)
+
+        # Remove embeddings for deleted file
+        try:
+            self.embeddings.remove_file(str_path)
+            self.chunk_count = self.embeddings.chunk_count
+        except Exception as e:
+            logger.error(f"Failed to remove embeddings for {str_path}: {e}")
 
     def start_watcher(self):
         """Start watching repo for file changes."""

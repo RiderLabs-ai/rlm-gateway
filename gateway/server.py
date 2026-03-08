@@ -2,7 +2,7 @@
 
 import logging
 import time
-import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -20,14 +20,30 @@ _forwarder: Forwarder | None = None
 _compiler = None
 _index = None
 _config: dict = {}
+_console = None
 
 
-def init(forwarder: Forwarder, compiler, index, config: dict):
-    global _forwarder, _compiler, _index, _config
+def init(forwarder: Forwarder, compiler, index, config: dict, console=None):
+    global _forwarder, _compiler, _index, _config, _console
     _forwarder = forwarder
     _compiler = compiler
     _index = index
     _config = config
+    _console = console
+
+
+def _log_request(method: str, path: str, task_type: str, tokens: int, status: str):
+    """Print a compact per-request log line."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    tokens_str = f"{tokens:,}" if tokens > 0 else "-"
+    if _console:
+        _console.print(
+            f"  [dim]{ts}[/dim]  {method} {path}  "
+            f"[cyan]{task_type}[/cyan]  {tokens_str} tokens  "
+            f"[green]{status}[/green]"
+        )
+    else:
+        logger.info(f"{ts}  {method} {path}  {task_type}  {tokens_str} tokens  {status}")
 
 
 @app.get("/health")
@@ -80,6 +96,7 @@ async def preview(request: Request):
 
     try:
         pack = _compiler.compile(signals, _index)
+        _log_request("POST", "/admin/preview", signals.task_type, pack.token_count, "200 OK")
         return {
             "signals": {
                 "raw_prompt": signals.raw_prompt,
@@ -110,16 +127,14 @@ async def chat_completions(request: Request):
 
     # Step 2: Compile context pack (with fallback)
     enriched_messages = messages
+    pack_tokens = 0
     if _compiler is not None and _index is not None and _index.ready:
         try:
             pack = _compiler.compile(signals, _index)
             if pack and pack.token_count > 0:
+                pack_tokens = pack.token_count
                 pack_xml = pack.to_xml()
                 enriched_messages = _prepend_context(messages, pack_xml)
-                logger.info(
-                    f"Injected context pack: {pack.token_count} tokens, "
-                    f"task_type={signals.task_type}"
-                )
         except Exception as e:
             logger.error(f"Compiler error, forwarding unmodified: {e}", exc_info=True)
     elif _index is not None and not _index.ready:
@@ -131,6 +146,7 @@ async def chat_completions(request: Request):
     try:
         if body.get("stream", False):
             stream_iter = await _forwarder.forward(forward_body)
+            _log_request("POST", "/v1/chat/completions", signals.task_type, pack_tokens, "200 OK")
             return StreamingResponse(
                 stream_iter,
                 media_type="text/event-stream",
@@ -141,14 +157,17 @@ async def chat_completions(request: Request):
             )
         else:
             result = await _forwarder.forward(forward_body)
+            _log_request("POST", "/v1/chat/completions", signals.task_type, pack_tokens, "200 OK")
             return JSONResponse(content=result)
 
     except DownstreamUnavailableError:
+        _log_request("POST", "/v1/chat/completions", signals.task_type, pack_tokens, "502 ERR")
         return JSONResponse(
             status_code=502,
             content={"error": {"message": "Moonshot API is unreachable", "type": "upstream_error"}},
         )
     except DownstreamError as e:
+        _log_request("POST", "/v1/chat/completions", signals.task_type, pack_tokens, "502 ERR")
         return JSONResponse(
             status_code=502,
             content={"error": {"message": str(e), "type": "upstream_error"}},

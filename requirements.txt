@@ -14,3 +14,4 @@ gitpython
 watchfiles
 ollama
 cachetools
+rich
