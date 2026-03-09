@@ -242,7 +242,7 @@ class EmbeddingStore:
         self._conn.execute("DELETE FROM vec_chunks")
         self._conn.commit()
 
-    def search(self, query: str, k: int = 8, threshold: float = 0.72) -> list[tuple[str, str, float]]:
+    def search(self, query: str, k: int = 8, threshold: float = 0.40) -> list[tuple[str, str, float]]:
         """Search for similar chunks. Returns (chunk_text, file_path, score)."""
         if not self._conn:
             return []
@@ -265,8 +265,8 @@ class EmbeddingStore:
             FROM vec_chunks v
             JOIN chunk_meta m ON v.rowid = m.id
             WHERE v.embedding MATCH ?
+            AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_bytes, k),
         ).fetchall()

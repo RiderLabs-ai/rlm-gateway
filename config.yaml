@@ -12,7 +12,7 @@ compiler:
   max_pack_tokens: 6000
   symbol_max_body_lines: 60
   max_call_sites: 5
-  semantic_threshold: 0.72
+  semantic_threshold: 0.40
 
 repl_pool:
   size: 4

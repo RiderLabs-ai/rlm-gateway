@@ -10,7 +10,7 @@ logger = logging.getLogger("rlm.strategy.convention")
 
 def run(signals: TaskSignals, index, pack: ContextPack, config: dict):
     """Semantic search with k=3, label results as existing pattern examples."""
-    threshold = config.get("compiler", {}).get("semantic_threshold", 0.72)
+    threshold = config.get("compiler", {}).get("semantic_threshold", 0.40)
 
     results = index.embeddings.search(
         query=signals.scope_hint,

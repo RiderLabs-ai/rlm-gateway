@@ -10,7 +10,7 @@ logger = logging.getLogger("rlm.strategy.semantic")
 
 def run(signals: TaskSignals, index, pack: ContextPack, config: dict):
     """Search embedding index with scope_hint, add results to pack."""
-    threshold = config.get("compiler", {}).get("semantic_threshold", 0.72)
+    threshold = config.get("compiler", {}).get("semantic_threshold", 0.40)
 
     results = index.embeddings.search(
         query=signals.scope_hint,

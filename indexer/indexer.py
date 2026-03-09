@@ -18,6 +18,27 @@ logger = logging.getLogger("rlm.indexer")
 # Extensions we index
 _INDEXABLE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".py", ".go"}
 
+# Directories and suffixes to ignore in the file watcher (common noise sources)
+_WATCH_IGNORE_DIRS = {
+    ".next", "node_modules", ".git", "dist", "build",
+    "__pycache__", ".vscode", "coverage",
+}
+_WATCH_IGNORE_SUFFIXES = {".log", ".tmp", ".cache"}
+
+_DEBOUNCE_SECONDS = 2
+
+
+def _watch_filter(change, path: str) -> bool:
+    """Filter for watchfiles: only indexable files outside noise directories."""
+    p = Path(path)
+    if p.suffix in _WATCH_IGNORE_SUFFIXES:
+        return False
+    if p.suffix not in _INDEXABLE_EXTS:
+        return False
+    if _WATCH_IGNORE_DIRS & set(p.parts):
+        return False
+    return True
+
 
 class RepoIndex:
     def __init__(self, config: dict):
@@ -226,18 +247,32 @@ class RepoIndex:
         def watch():
             logger.info(f"Watching {self.repo_path} for changes")
             try:
+                pending: dict[str, watchfiles.Change] = {}
                 for changes in watchfiles.watch(
                     self.repo_path,
                     stop_event=self._stop_watcher,
-                    watch_filter=lambda change, path: Path(path).suffix in _INDEXABLE_EXTS,
+                    watch_filter=_watch_filter,
+                    rust_timeout=int(_DEBOUNCE_SECONDS * 1000),
+                    yield_on_timeout=True,
                 ):
-                    for change_type, path in changes:
+                    if changes:
+                        for change_type, path in changes:
+                            pending[path] = change_type
+                        continue
+
+                    # Timeout with no new changes — flush pending batch
+                    if not pending:
+                        continue
+
+                    for path, change_type in pending.items():
                         if change_type == watchfiles.Change.deleted:
                             self._handle_delete(path)
                         else:
                             self._reindex_file(path)
                     # Rebuild dep graph after batch of changes
                     self.dep_graph.build(self.ast_map, self.repo_path, self._all_files)
+                    logger.debug(f"Debounced reindex: {len(pending)} file(s)")
+                    pending.clear()
             except Exception as e:
                 if not self._stop_watcher.is_set():
                     logger.error(f"Watcher error: {e}")
